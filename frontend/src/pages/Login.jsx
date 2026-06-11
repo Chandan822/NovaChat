@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { Moon, Sun } from "lucide-react";
 import "../Login.css";
 import api from "../api/axios";
 
@@ -8,7 +9,13 @@ function Login() {
   const [formData, setFormData] = useState({ email: "", password: "", name: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
   const navigate = useNavigate();
+
+  useEffect(() => {
+    localStorage.setItem("theme", theme);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -48,7 +55,17 @@ function Login() {
   };
 
   return (
-    <div className="login-page">
+    <div className="login-page" data-theme={theme}>
+      <button
+        type="button"
+        className="login-theme-toggle"
+        onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+        title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+        aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+      >
+        {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
+      </button>
+
       <div className="login-card">
         <div className="login-brand">
           <h1>CodeCoach</h1>
@@ -72,7 +89,7 @@ function Login() {
 
           <div className="form-group">
             <label htmlFor="password">Password</label>
-            <input type="password" id="password" name="password" value={formData.password} onChange={handleChange} placeholder="••••••••" required minLength="6" />
+            <input type="password" id="password" name="password" value={formData.password} onChange={handleChange} placeholder="Password" required minLength="6" />
           </div>
 
           {error && <div className="error-message">{error}</div>}
@@ -90,7 +107,7 @@ function Login() {
         </div>
 
         <div className="skip-login">
-          <Link to="/">Continue as Guest →</Link>
+          <Link to="/">Continue as Guest -&gt;</Link>
         </div>
       </div>
     </div>

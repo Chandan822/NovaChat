@@ -2,6 +2,14 @@ const Chat = require('../models/Chat');
 const Message = require('../models/Message');
 const Groq = require('groq-sdk');
 
+const CONTEXT_MESSAGE_LIMIT = 10;
+const MAX_IMAGE_FILES = 5;
+const MAX_TEXT_FILES = 2;
+const MAX_TEXT_FILE_SIZE_BYTES = 1 * 1024 * 1024;
+const CODECOACH_SYSTEM_PROMPT = "You are CodeCoach, an expert software engineering tutor and AI study buddy. You help students learn programming, understand algorithms, and debug code. Output responses using markdown. If generating code, use markdown code blocks with the correct language tag.";
+const TEXT_MODEL = 'llama-3.3-70b-versatile';
+const VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+
 // Helper to extract code snippets from markdown text
 const extractCodeSnippets = (text) => {
   const codeSnippets = [];
@@ -14,6 +22,167 @@ const extractCodeSnippets = (text) => {
     });
   }
   return codeSnippets;
+};
+
+const getMessageContentForContext = (message) => {
+  let content = message.content;
+  const textAttachments = message.attachments?.filter((file) => file.kind === 'text' && file.textContent) || [];
+
+  if (textAttachments.length > 0) {
+    const attachmentText = textAttachments
+      .map((file) => `--- ${file.fileName} (${file.mimeType}) ---\n${file.textContent}`)
+      .join('\n\n');
+
+    content = `${content}\n\nAttached text files:\n${attachmentText}`;
+  }
+
+  const imageAttachments = message.attachments?.filter((file) => file.kind === 'image') || [];
+  if (imageAttachments.length > 0) {
+    const imageList = imageAttachments.map((file) => file.fileName).join(', ');
+    content = `${content}\n\nAttached image files: ${imageList}`;
+  }
+
+  return content;
+};
+
+const toGroqMessages = (messages) => messages
+  .filter((m) => m.role === 'user' || m.role === 'assistant')
+  .map((m) => ({
+    role: m.role,
+    content: getMessageContentForContext(m),
+  }));
+
+const formatTranscript = (messages) => messages
+  .map((m, index) => `${index + 1}. ${m.role.toUpperCase()}: ${m.content}`)
+  .join('\n\n');
+
+const fallbackSummary = (messages) => messages
+  .map((m) => {
+    const compactContent = String(m.content || '').replace(/\s+/g, ' ').trim();
+    return `${m.role}: ${compactContent.slice(0, 240)}${compactContent.length > 240 ? '...' : ''}`;
+  })
+  .join('\n');
+
+const summarizeMessages = async (groq, messages) => {
+  if (messages.length === 0) return null;
+
+  try {
+    const result = await groq.chat.completions.create({
+      messages: [
+        {
+          role: 'system',
+          content: 'Summarize the earlier chat context for a programming tutor. Keep important user goals, code details, constraints, decisions, bugs, and unresolved questions. Be concise and factual.',
+        },
+        {
+          role: 'user',
+          content: `Summarize this older conversation in 8 short bullet points or fewer:\n\n${formatTranscript(messages)}`,
+        },
+      ],
+      model: TEXT_MODEL,
+    });
+
+    return result.choices[0]?.message?.content?.trim() || fallbackSummary(messages);
+  } catch (error) {
+    console.error('Failed to summarize older messages:', error);
+    return fallbackSummary(messages);
+  }
+};
+
+const buildContextMessages = async (groq, allMessages) => {
+  const groqMessages = toGroqMessages(allMessages);
+  const recentMessages = groqMessages.slice(-CONTEXT_MESSAGE_LIMIT);
+  const olderMessages = groqMessages.slice(0, -CONTEXT_MESSAGE_LIMIT);
+
+  if (olderMessages.length === 0) {
+    return recentMessages;
+  }
+
+  const summary = await summarizeMessages(groq, olderMessages);
+  return [
+    {
+      role: 'system',
+      content: `Short summary of earlier messages before the latest ${CONTEXT_MESSAGE_LIMIT} messages:\n${summary}`,
+    },
+    ...recentMessages,
+  ];
+};
+
+const processUploads = (files = []) => {
+  const imageFiles = files.filter((file) => file.mimetype.startsWith('image/'));
+  const textFiles = files.filter((file) => !file.mimetype.startsWith('image/'));
+
+  if (imageFiles.length > MAX_IMAGE_FILES) {
+    const error = new Error(`You can upload at most ${MAX_IMAGE_FILES} images per message.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (textFiles.length > MAX_TEXT_FILES) {
+    const error = new Error(`You can upload at most ${MAX_TEXT_FILES} text files per message.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const attachments = [];
+  const imageParts = [];
+
+  for (const file of imageFiles) {
+    attachments.push({
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      kind: 'image',
+    });
+
+    imageParts.push({
+      type: 'image_url',
+      image_url: {
+        url: `data:${file.mimetype};base64,${file.buffer.toString('base64')}`,
+      },
+    });
+  }
+
+  for (const file of textFiles) {
+    if (file.size > MAX_TEXT_FILE_SIZE_BYTES) {
+      const error = new Error('Each text file must be 1MB or smaller.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    attachments.push({
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      kind: 'text',
+      textContent: file.buffer.toString('utf8'),
+    });
+  }
+
+  return { attachments, imageParts };
+};
+
+const applyCurrentImagesToContext = (contextMessages, imageParts) => {
+  if (imageParts.length === 0 || contextMessages.length === 0) {
+    return contextMessages;
+  }
+
+  const updatedMessages = [...contextMessages];
+  const lastIndex = updatedMessages.length - 1;
+  const lastMessage = updatedMessages[lastIndex];
+
+  if (lastMessage.role !== 'user') {
+    return contextMessages;
+  }
+
+  updatedMessages[lastIndex] = {
+    ...lastMessage,
+    content: [
+      { type: 'text', text: lastMessage.content },
+      ...imageParts,
+    ],
+  };
+
+  return updatedMessages;
 };
 
 // Start a new chat
@@ -86,10 +255,16 @@ exports.getChatMessages = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const { content } = req.body;
+    const content = req.body.content?.trim() || '';
+    const { attachments, imageParts } = processUploads(req.files || []);
+    const messageContent = content || (
+      attachments.length > 0
+        ? `Uploaded ${attachments.length} file${attachments.length > 1 ? 's' : ''}.`
+        : ''
+    );
 
-    if (!content) {
-      return res.status(400).json({ message: 'Message content is required' });
+    if (!messageContent) {
+      return res.status(400).json({ message: 'Message content or attachments are required' });
     }
 
     // Validate chat
@@ -99,35 +274,31 @@ exports.sendMessage = async (req, res) => {
     }
 
     // Extract code snippets from user content (if any)
-    const userSnippets = extractCodeSnippets(content);
+    const userSnippets = extractCodeSnippets(messageContent);
     
     // Save User Message
     const userMessage = new Message({
       chatId,
       userId: req.user._id,
       role: 'user',
-      content,
+      content: messageContent,
       hasCode: userSnippets.length > 0,
       codeSnippets: userSnippets,
+      attachments,
     });
     await userMessage.save();
 
-    // Fetch previous messages for context
-    const previousMessages = await Message.find({ chatId }).sort({ timestamp: 1 });
-    
-    // Map to Groq format
-    const history = previousMessages
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-      
-    // Append the current message
-    history.push({ role: 'user', content });
-
     // Initialize Groq API
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    // Fetch all messages after saving the current user message.
+    // The latest 10 are sent verbatim; anything older is summarized.
+    const allMessages = await Message.find({ chatId }).sort({ timestamp: 1 });
+    const contextMessages = applyCurrentImagesToContext(
+      await buildContextMessages(groq, allMessages),
+      imageParts
+    );
+    const model = imageParts.length > 0 ? VISION_MODEL : TEXT_MODEL;
     
     // Send the message and get response
     const startTime = Date.now();
@@ -137,11 +308,11 @@ exports.sendMessage = async (req, res) => {
         messages: [
           {
             role: "system",
-            content: "You are CodeCoach, an expert software engineering tutor and AI study buddy. You help students learn programming, understand algorithms, and debug code. Output responses using markdown. If generating code, use markdown code blocks with the correct language tag."
+            content: CODECOACH_SYSTEM_PROMPT
           },
-          ...history
+          ...contextMessages
         ],
-        model: "llama-3.3-70b-versatile",
+        model,
       });
     } catch (groqError) {
       console.error('------- GROQ API CRASH -------');
@@ -165,7 +336,7 @@ exports.sendMessage = async (req, res) => {
       hasCode: assistantSnippets.length > 0,
       codeSnippets: assistantSnippets,
       metadata: {
-        model: 'llama-3.3-70b-versatile',
+        model,
         processingTime,
       }
     });
@@ -178,7 +349,7 @@ exports.sendMessage = async (req, res) => {
     // Automatically generate a title if it's the first message
     if (chat.messageCount === 2) {
       // Very basic title generator based on first message
-      chat.title = content.substring(0, 30) + (content.length > 30 ? '...' : '');
+      chat.title = messageContent.substring(0, 30) + (messageContent.length > 30 ? '...' : '');
     }
     await chat.save();
 
@@ -189,7 +360,7 @@ exports.sendMessage = async (req, res) => {
 
   } catch (error) {
     console.error('Error sending message:', error);
-    res.status(500).json({ message: 'Server error processing your message' });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error processing your message' });
   }
 };
 
@@ -202,17 +373,16 @@ exports.sendAnonymousMessage = async (req, res) => {
       return res.status(400).json({ message: 'Message content is required' });
     }
 
-    // Map passed history to Groq format (if any previous frontend-only messages exist)
-    const formattedHistory = history.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-      
-    // Append the current message
-    formattedHistory.push({ role: 'user', content });
-
     // Initialize Groq API
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    // Anonymous history lives in frontend state. Add the current message once,
+    // then summarize older context if the conversation is longer than 10 messages.
+    const allMessages = [
+      ...history,
+      { role: 'user', content },
+    ];
+    const contextMessages = await buildContextMessages(groq, allMessages);
     
     // Send the message and get response
     const startTime = Date.now();
@@ -222,11 +392,11 @@ exports.sendAnonymousMessage = async (req, res) => {
         messages: [
           {
             role: "system",
-            content: "You are CodeCoach, an expert software engineering tutor and AI study buddy. You help students learn programming, understand algorithms, and debug code. Output responses using markdown. If generating code, use markdown code blocks with the correct language tag."
+            content: CODECOACH_SYSTEM_PROMPT
           },
-          ...formattedHistory
+          ...contextMessages
         ],
-        model: "llama-3.3-70b-versatile",
+        model: TEXT_MODEL,
       });
     } catch (groqError) {
       console.error('------- GROQ API CRASH -------');
@@ -247,7 +417,7 @@ exports.sendAnonymousMessage = async (req, res) => {
       hasCode: assistantSnippets.length > 0,
       codeSnippets: assistantSnippets,
       metadata: {
-        model: 'llama-3.3-70b-versatile',
+        model: TEXT_MODEL,
         processingTime,
       }
     };

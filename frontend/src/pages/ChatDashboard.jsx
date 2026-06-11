@@ -1,9 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import { LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn } from 'lucide-react';
+import { LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn, Moon, Sun, Paperclip, X, Image, FileText } from 'lucide-react';
 import api from '../api/axios';
 import '../ChatDashboard.css';
+
+const MAX_IMAGE_FILES = 5;
+const MAX_TEXT_FILES = 2;
+const MAX_IMAGE_SIZE = 2 * 1024 * 1024;
+const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const ALLOWED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/javascript', 'text/javascript', 'text/css', 'text/html'];
+const ALLOWED_TEXT_EXTENSIONS = ['.txt', '.md', '.csv', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html'];
 
 function ChatDashboard() {
   const [chats, setChats] = useState([]);
@@ -11,12 +19,21 @@ function ChatDashboard() {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [fileError, setFileError] = useState('');
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
   const navigate = useNavigate();
 
   const userName = localStorage.getItem('userName') || 'User';
 
   const isLoggedIn = !!localStorage.getItem('token');
+
+  useEffect(() => {
+    localStorage.setItem('theme', theme);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   // Fetch user chats on mount if logged in
   useEffect(() => {
@@ -94,9 +111,74 @@ function ChatDashboard() {
     }
   };
 
+  const getFileKind = (file) => {
+    if (ALLOWED_IMAGE_TYPES.includes(file.type)) return 'image';
+    const extension = `.${file.name.split('.').pop()?.toLowerCase()}`;
+    if (ALLOWED_TEXT_TYPES.includes(file.type) || ALLOWED_TEXT_EXTENSIONS.includes(extension)) return 'text';
+    return null;
+  };
+
+  const validateFiles = (files) => {
+    const combinedFiles = [...selectedFiles, ...files];
+    const imageFiles = combinedFiles.filter((file) => getFileKind(file) === 'image');
+    const textFiles = combinedFiles.filter((file) => getFileKind(file) === 'text');
+    const unsupportedFile = combinedFiles.find((file) => !getFileKind(file));
+    const oversizedImage = imageFiles.find((file) => file.size > MAX_IMAGE_SIZE);
+    const oversizedText = textFiles.find((file) => file.size > MAX_TEXT_SIZE);
+
+    if (unsupportedFile) return 'Only PNG, JPG, WEBP images and small text files are allowed.';
+    if (imageFiles.length > MAX_IMAGE_FILES) return `You can attach at most ${MAX_IMAGE_FILES} images.`;
+    if (textFiles.length > MAX_TEXT_FILES) return `You can attach at most ${MAX_TEXT_FILES} text files.`;
+    if (oversizedImage) return 'Each image must be 2MB or smaller.';
+    if (oversizedText) return 'Each text file must be 1MB or smaller.';
+
+    return '';
+  };
+
+  const handleFileSelection = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const validationError = validateFiles(files);
+    if (validationError) {
+      setFileError(validationError);
+    } else {
+      setSelectedFiles((prev) => [...prev, ...files]);
+      setFileError('');
+    }
+
+    e.target.value = '';
+  };
+
+  const removeSelectedFile = (indexToRemove) => {
+    setSelectedFiles((prev) => prev.filter((_, index) => index !== indexToRemove));
+    setFileError('');
+  };
+
+  const formatFileSize = (size) => {
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const renderAttachments = (attachments = []) => {
+    if (!attachments.length) return null;
+
+    return (
+      <div className="message-attachments">
+        {attachments.map((file, index) => (
+          <span key={`${file.fileName}-${index}`} className="attachment-pill">
+            {file.kind === 'image' ? <Image size={14} /> : <FileText size={14} />}
+            <span>{file.fileName}</span>
+          </span>
+        ))}
+      </div>
+    );
+  };
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!inputMessage.trim()) return;
+    if (!inputMessage.trim() && selectedFiles.length === 0) return;
 
     if (!isLoggedIn) {
       // ANONYMOUS MODE
@@ -136,18 +218,36 @@ function ChatDashboard() {
       }
     }
 
-    const newMessage = { role: 'user', content: inputMessage };
+    const attachments = selectedFiles.map((file) => ({
+      fileName: file.name,
+      mimeType: file.type,
+      size: file.size,
+      kind: getFileKind(file),
+    }));
+    const newMessage = {
+      role: 'user',
+      content: inputMessage || `Uploaded ${attachments.length} file${attachments.length > 1 ? 's' : ''}.`,
+      attachments,
+    };
+    const outgoingFiles = selectedFiles;
     setMessages((prev) => [...prev, newMessage]);
     setInputMessage('');
+    setSelectedFiles([]);
+    setFileError('');
     setLoading(true);
 
     try {
-      const response = await api.post(`/chat/${targetChatId}/message`, { content: newMessage.content });
+      const formData = new FormData();
+      formData.append('content', newMessage.content);
+      outgoingFiles.forEach((file) => formData.append('attachments', file));
+
+      const response = await api.post(`/chat/${targetChatId}/message`, formData);
       setMessages((prev) => {
         return [...prev, response.data.assistantMessage];
       });
       fetchChats();
     } catch (error) {
+      setFileError(error.response?.data?.message || 'Failed to send message');
       console.error('Failed to send message', error);
     } finally {
       setLoading(false);
@@ -165,11 +265,22 @@ function ChatDashboard() {
   };
 
   return (
-    <div className="dashboard-container">
+    <div className="dashboard-container" data-theme={theme}>
       {/* Sidebar */}
       <aside className="chat-sidebar">
         <div className="sidebar-header">
-          <h2>CodeCoach</h2>
+          <div className="brand-row">
+            <h2>CodeCoach</h2>
+            <button
+              type="button"
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              className="theme-toggle"
+              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+            >
+              {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+            </button>
+          </div>
           <button onClick={handleNewChat} className="new-chat-btn">
             <PlusCircle size={20} />
             <span>New Chat</span>
@@ -212,7 +323,7 @@ function ChatDashboard() {
               <LogOut size={20} />
             </button>
           ) : (
-            <button onClick={() => navigate('/login')} className="logout-btn" title="Login" style={{ color: '#60a5fa' }}>
+            <button onClick={() => navigate('/login')} className="logout-btn" title="Login">
               <LogIn size={20} />
             </button>
           )}
@@ -228,13 +339,14 @@ function ChatDashboard() {
                 <div className="empty-chat-state">
                   <h3>Start a new conversation</h3>
                   <p>Ask me anything about programming, debugging, or computer science concepts.</p>
-                  {!isLoggedIn && <p style={{marginTop: '10px', fontSize: '0.85rem'}}><strong>Note:</strong> You are chatting anonymously. Messages will not be saved.</p>}
+                  {!isLoggedIn && <p className="guest-note"><strong>Note:</strong> You are chatting anonymously. Messages will not be saved.</p>}
                 </div>
               ) : (
                 messages.map((msg, index) => (
                   <div key={index} className={`message-bubble ${msg.role}`}>
                     <div className="message-content">
                       <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      {renderAttachments(msg.attachments)}
                     </div>
                   </div>
                 ))
@@ -251,7 +363,44 @@ function ChatDashboard() {
             </div>
 
             <div className="input-area">
+              {isLoggedIn && selectedFiles.length > 0 && (
+                <div className="selected-files">
+                  {selectedFiles.map((file, index) => (
+                    <span key={`${file.name}-${index}`} className="selected-file-pill">
+                      {getFileKind(file) === 'image' ? <Image size={14} /> : <FileText size={14} />}
+                      <span>{file.name}</span>
+                      <small>{formatFileSize(file.size)}</small>
+                      <button type="button" onClick={() => removeSelectedFile(index)} aria-label={`Remove ${file.name}`}>
+                        <X size={14} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {fileError && <div className="file-error">{fileError}</div>}
               <form onSubmit={handleSendMessage} className="message-form">
+                {isLoggedIn && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept=".txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.css,.html,text/plain,text/markdown,text/csv,application/json,application/javascript,text/javascript,text/css,text/html,image/png,image/jpeg,image/webp"
+                      onChange={handleFileSelection}
+                      className="file-input"
+                    />
+                    <button
+                      type="button"
+                      className="attach-btn"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={loading}
+                      title="Attach files"
+                      aria-label="Attach files"
+                    >
+                      <Paperclip size={20} />
+                    </button>
+                  </>
+                )}
                 <input
                   type="text"
                   value={inputMessage}
@@ -260,7 +409,7 @@ function ChatDashboard() {
                   disabled={loading}
                   autoFocus
                 />
-                <button type="submit" disabled={loading || !inputMessage.trim()}>
+                <button type="submit" disabled={loading || (!inputMessage.trim() && selectedFiles.length === 0)}>
                   <Send size={20} />
                 </button>
               </form>
