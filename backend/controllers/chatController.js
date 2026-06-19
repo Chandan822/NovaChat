@@ -6,9 +6,38 @@ const CONTEXT_MESSAGE_LIMIT = 10;
 const MAX_IMAGE_FILES = 5;
 const MAX_TEXT_FILES = 2;
 const MAX_TEXT_FILE_SIZE_BYTES = 1 * 1024 * 1024;
-const CODECOACH_SYSTEM_PROMPT = "You are CodeCoach, an expert software engineering tutor and AI study buddy. You help students learn programming, understand algorithms, and debug code. Output responses using markdown. If generating code, use markdown code blocks with the correct language tag.";
-const TEXT_MODEL = 'llama-3.3-70b-versatile';
-const VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+const NOVA_SYSTEM_PROMPT = "You are NovaChat, a highly capable, creative, and clever AI assistant. You can help with writing, analysis, learning, coding, calculations, and general conversation. Output responses using clean, well-formatted markdown. If generating code, use markdown code blocks with the correct language tag.";
+const DEFAULT_TEXT_MODEL = 'llama-3.3-70b-versatile';
+const VISION_MODEL = 'llama-3.2-11b-vision-preview';
+const ALLOWED_MODELS = new Set([
+  'llama-3.3-70b-versatile',
+  'mixtral-8x7b-32768',
+  'gemma2-9b-it',
+  'llama-3.1-8b-instant'
+]);
+
+const getGroqKeys = () => {
+  const envKeys = process.env.GROQ_API_KEYS
+    ? process.env.GROQ_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
+    : [];
+  if (envKeys.length > 0) return envKeys;
+  return process.env.GROQ_API_KEY ? [process.env.GROQ_API_KEY.trim()] : [];
+};
+
+const getApiKeyForUser = (userId, keys) => {
+  if (!keys || keys.length === 0) return null;
+  if (!userId) {
+    const randomIndex = Math.floor(Math.random() * keys.length);
+    return keys[randomIndex];
+  }
+  let hash = 0;
+  const idStr = String(userId);
+  for (let i = 0; i < idStr.length; i++) {
+    hash = idStr.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % keys.length;
+  return keys[index];
+};
 
 // Helper to extract code snippets from markdown text
 const extractCodeSnippets = (text) => {
@@ -71,14 +100,14 @@ const summarizeMessages = async (groq, messages) => {
       messages: [
         {
           role: 'system',
-          content: 'Summarize the earlier chat context for a programming tutor. Keep important user goals, code details, constraints, decisions, bugs, and unresolved questions. Be concise and factual.',
+          content: 'Summarize the earlier chat context for a general-purpose AI assistant. Keep important user goals, key details, constraints, decisions, and unresolved questions. Be concise and factual.',
         },
         {
           role: 'user',
           content: `Summarize this older conversation in 8 short bullet points or fewer:\n\n${formatTranscript(messages)}`,
         },
       ],
-      model: TEXT_MODEL,
+      model: DEFAULT_TEXT_MODEL,
     });
 
     return result.choices[0]?.message?.content?.trim() || fallbackSummary(messages);
@@ -288,8 +317,21 @@ exports.sendMessage = async (req, res) => {
     });
     await userMessage.save();
 
-    // Initialize Groq API
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    // Determine the text model to use (default or dynamic selection)
+    let selectedTextModel = req.body.model || DEFAULT_TEXT_MODEL;
+    if (!ALLOWED_MODELS.has(selectedTextModel)) {
+      selectedTextModel = DEFAULT_TEXT_MODEL;
+    }
+    const model = imageParts.length > 0 ? VISION_MODEL : selectedTextModel;
+
+    // Load balance Groq keys consistently by user ID
+    const availableKeys = getGroqKeys();
+    const apiKey = getApiKeyForUser(req.user?._id, availableKeys);
+    if (!apiKey) {
+      return res.status(500).json({ message: 'No Groq API keys configured on server.' });
+    }
+
+    const groq = new Groq({ apiKey });
 
     // Fetch all messages after saving the current user message.
     // The latest 10 are sent verbatim; anything older is summarized.
@@ -298,7 +340,6 @@ exports.sendMessage = async (req, res) => {
       await buildContextMessages(groq, allMessages),
       imageParts
     );
-    const model = imageParts.length > 0 ? VISION_MODEL : TEXT_MODEL;
     
     // Send the message and get response
     const startTime = Date.now();
@@ -308,7 +349,7 @@ exports.sendMessage = async (req, res) => {
         messages: [
           {
             role: "system",
-            content: CODECOACH_SYSTEM_PROMPT
+            content: NOVA_SYSTEM_PROMPT
           },
           ...contextMessages
         ],
@@ -373,8 +414,20 @@ exports.sendAnonymousMessage = async (req, res) => {
       return res.status(400).json({ message: 'Message content is required' });
     }
 
-    // Initialize Groq API
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    // Determine the text model to use (default or dynamic selection)
+    let selectedTextModel = req.body.model || DEFAULT_TEXT_MODEL;
+    if (!ALLOWED_MODELS.has(selectedTextModel)) {
+      selectedTextModel = DEFAULT_TEXT_MODEL;
+    }
+
+    // Load balance Groq keys
+    const availableKeys = getGroqKeys();
+    const apiKey = getApiKeyForUser(null, availableKeys); // anonymous guest has null userId
+    if (!apiKey) {
+      return res.status(500).json({ message: 'No Groq API keys configured on server.' });
+    }
+
+    const groq = new Groq({ apiKey });
 
     // Anonymous history lives in frontend state. Add the current message once,
     // then summarize older context if the conversation is longer than 10 messages.
@@ -392,11 +445,11 @@ exports.sendAnonymousMessage = async (req, res) => {
         messages: [
           {
             role: "system",
-            content: CODECOACH_SYSTEM_PROMPT
+            content: NOVA_SYSTEM_PROMPT
           },
           ...contextMessages
         ],
-        model: TEXT_MODEL,
+        model: selectedTextModel,
       });
     } catch (groqError) {
       console.error('------- GROQ API CRASH -------');
@@ -417,7 +470,7 @@ exports.sendAnonymousMessage = async (req, res) => {
       hasCode: assistantSnippets.length > 0,
       codeSnippets: assistantSnippets,
       metadata: {
-        model: TEXT_MODEL,
+        model: selectedTextModel,
         processingTime,
       }
     };

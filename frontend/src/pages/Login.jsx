@@ -68,8 +68,8 @@ function Login() {
 
       <div className="login-card">
         <div className="login-brand">
-          <h1>CodeCoach</h1>
-          <p>Your AI-powered programming tutor</p>
+          <h1>NovaChat</h1>
+          <p>Your intelligent general-purpose AI assistant</p>
         </div>
 
         <h2>{isLogin ? "Welcome back" : "Create account"}</h2>

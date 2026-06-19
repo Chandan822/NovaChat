@@ -1,11 +1,11 @@
 <svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="128" height="128" rx="28" fill="#111113"/>
-  <path d="M26 43L13 64L26 85" stroke="#F59E0B" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M102 43L115 64L102 85" stroke="#F59E0B" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="64" cy="64" r="34" fill="#F4F4F5"/>
-  <path d="M61 50C57.7 47.1 53.8 45.7 49.5 45.7C39.7 45.7 32.8 53.4 32.8 64C32.8 74.6 39.7 82.3 49.5 82.3C54.1 82.3 58.1 80.8 61.1 77.7" stroke="#18181B" stroke-width="8" stroke-linecap="round"/>
-  <path d="M94 50C90.7 47.1 86.8 45.7 82.5 45.7C72.7 45.7 65.8 53.4 65.8 64C65.8 74.6 72.7 82.3 82.5 82.3C87.1 82.3 91.1 80.8 94.1 77.7" stroke="#18181B" stroke-width="8" stroke-linecap="round"/>
-  <path d="M44 28L64 18L84 28L64 38L44 28Z" fill="#F59E0B"/>
-  <path d="M84 29V43" stroke="#F59E0B" stroke-width="5" stroke-linecap="round"/>
-  <circle cx="84" cy="48" r="4" fill="#F59E0B"/>
+  <defs>
+    <linearGradient id="bubbleGrad" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+  </defs>
+  <path d="M24 24C24 19.5817 27.5817 16 32 16H96C100.418 16 104 19.5817 104 24V80C104 84.4183 100.418 88 96 88H48L24 108V24Z" fill="url(#bubbleGrad)"/>
+  <path d="M64 40C64 50 70 56 80 56C70 56 64 62 64 72C64 62 58 56 48 56C58 56 64 50 64 40Z" fill="#ffffff" />
+  <path d="M88 28C88 33 91 36 96 36C91 36 88 39 88 44C88 39 85 36 80 36C85 36 88 33 88 28Z" fill="#ffffff" opacity="0.8" />
 </svg>

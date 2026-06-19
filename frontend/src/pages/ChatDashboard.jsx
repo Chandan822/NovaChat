@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import { LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn, Moon, Sun, Paperclip, X, Image, FileText } from 'lucide-react';
+import { ChevronDown, LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn, Moon, Sun, Paperclip, X, Image, FileText } from 'lucide-react';
 import api from '../api/axios';
 import '../ChatDashboard.css';
 
@@ -24,7 +24,28 @@ function ChatDashboard() {
   const [fileError, setFileError] = useState('');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const [selectedModel, setSelectedModel] = useState('llama-3.3-70b-versatile');
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  const modelsList = [
+    { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', desc: 'Capable and deep reasoning model' },
+    { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B', desc: 'Mistral\'s high-quality MoE model' },
+    { id: 'gemma2-9b-it', name: 'Gemma 2 9B', desc: 'Google\'s fast & responsive model' },
+    { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B', desc: 'Instant-speed general answers' },
+  ];
+
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const userName = localStorage.getItem('userName') || 'User';
 
@@ -190,7 +211,8 @@ function ChatDashboard() {
       try {
         const response = await api.post('/chat/anonymous', { 
           content: newMessage.content,
-          history: messages 
+          history: messages,
+          model: selectedModel
         });
         setMessages((prev) => [...prev, response.data.assistantMessage]);
         setCurrentChatId('anonymous');
@@ -239,6 +261,7 @@ function ChatDashboard() {
     try {
       const formData = new FormData();
       formData.append('content', newMessage.content);
+      formData.append('model', selectedModel);
       outgoingFiles.forEach((file) => formData.append('attachments', file));
 
       const response = await api.post(`/chat/${targetChatId}/message`, formData);
@@ -270,7 +293,7 @@ function ChatDashboard() {
       <aside className="chat-sidebar">
         <div className="sidebar-header">
           <div className="brand-row">
-            <h2>CodeCoach</h2>
+            <h2>NovaChat</h2>
             <button
               type="button"
               onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
@@ -334,11 +357,47 @@ function ChatDashboard() {
       <main className="chat-main">
         {currentChatId ? (
           <>
+            <div className="chat-header">
+              <div className="chat-header-info">
+                <h3>{currentChatId === 'anonymous' ? 'Anonymous Chat' : (chats.find(c => c._id === currentChatId)?.title || 'NovaChat')}</h3>
+              </div>
+              <div className="chat-header-actions">
+                <div className="custom-dropdown" ref={dropdownRef}>
+                  <button 
+                    type="button"
+                    className="dropdown-trigger" 
+                    onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                    title="Choose AI Model"
+                  >
+                    <span>{modelsList.find(m => m.id === selectedModel)?.name || 'Select Model'}</span>
+                    <ChevronDown size={15} className={`chevron-icon ${isModelDropdownOpen ? 'open' : ''}`} />
+                  </button>
+                  {isModelDropdownOpen && (
+                    <div className="dropdown-menu">
+                      {modelsList.map((m) => (
+                        <div 
+                          key={m.id} 
+                          className={`dropdown-item ${selectedModel === m.id ? 'active' : ''}`}
+                          onClick={() => {
+                            setSelectedModel(m.id);
+                            setIsModelDropdownOpen(false);
+                          }}
+                        >
+                          <div className="model-item-title">{m.name}</div>
+                          <div className="model-item-desc">{m.desc}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="messages-area">
               {messages.length === 0 ? (
                 <div className="empty-chat-state">
                   <h3>Start a new conversation</h3>
-                  <p>Ask me anything about programming, debugging, or computer science concepts.</p>
+                  <p>Ask me anything—writing, analysis, learning, coding, or just start a chat.</p>
                   {!isLoggedIn && <p className="guest-note"><strong>Note:</strong> You are chatting anonymously. Messages will not be saved.</p>}
                 </div>
               ) : (
@@ -347,6 +406,16 @@ function ChatDashboard() {
                     <div className="message-content">
                       <ReactMarkdown>{msg.content}</ReactMarkdown>
                       {renderAttachments(msg.attachments)}
+                      {msg.role === 'assistant' && msg.metadata?.model && (
+                        <div className="model-badge">
+                          {msg.metadata.model === 'llama-3.3-70b-versatile' ? 'Llama 3.3' :
+                           msg.metadata.model === 'mixtral-8x7b-32768' ? 'Mixtral 8x7B' :
+                           msg.metadata.model === 'gemma2-9b-it' ? 'Gemma 2' :
+                           msg.metadata.model === 'llama-3.1-8b-instant' ? 'Llama 3.1' :
+                           msg.metadata.model === 'llama-3.2-11b-vision-preview' ? 'Llama 3.2 Vision' :
+                           msg.metadata.model}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))
@@ -355,7 +424,7 @@ function ChatDashboard() {
                 <div className="message-bubble assistant">
                   <div className="message-content typing-indicator">
                     <Loader className="spinner" size={16} />
-                    <span>Coach is thinking...</span>
+                    <span>NovaChat is thinking...</span>
                   </div>
                 </div>
               )}
@@ -405,7 +474,7 @@ function ChatDashboard() {
                   type="text"
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}
-                  placeholder="Ask CodeCoach..."
+                  placeholder="Ask NovaChat..."
                   disabled={loading}
                   autoFocus
                 />
@@ -418,9 +487,9 @@ function ChatDashboard() {
         ) : (
           <div className="no-chat-selected">
             <h2>Welcome back, {userName}!</h2>
-            <p>Select a chat from the sidebar or start a new one to begin learning.</p>
+            <p>Select a chat from the sidebar or start a new one to begin.</p>
             <button onClick={handleNewChat} className="start-learning-btn">
-              Start Learning
+              Start Chatting
             </button>
           </div>
         )}

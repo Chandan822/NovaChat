@@ -86,7 +86,7 @@ app.use('/api/chat', chatRoutes);
 
 // Test route
 app.get('/', (req, res) => {
-  res.json({ message: 'CodeCoach API is running' });
+  res.json({ message: 'NovaChat API is running' });
 });
 
 app.get('/health', (req, res) => {
