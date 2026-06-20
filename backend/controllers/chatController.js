@@ -1,6 +1,33 @@
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
 const Groq = require('groq-sdk');
+const axios = require('axios');
+
+const performTavilySearch = async (query) => {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey || apiKey === 'your_tavily_api_key_here') {
+    return 'Search failed: Tavily API key is not configured on the server.';
+  }
+  try {
+    const response = await axios.post('https://api.tavily.com/search', {
+      api_key: apiKey,
+      query: query,
+      search_depth: 'basic',
+      include_answer: true,
+      max_results: 5,
+    });
+    
+    const results = response.data?.results || [];
+    if (results.length === 0) return 'No search results found.';
+    
+    return results
+      .map((r, i) => `[${i + 1}] Title: ${r.title}\nURL: ${r.url}\nContent: ${r.content}`)
+      .join('\n\n');
+  } catch (error) {
+    console.error('Tavily search error:', error?.response?.data || error.message);
+    return `Search error: ${error.message}`;
+  }
+};
 
 const CONTEXT_MESSAGE_LIMIT = 10;
 const MAX_IMAGE_FILES = 5;
@@ -11,8 +38,8 @@ const DEFAULT_TEXT_MODEL = 'llama-3.3-70b-versatile';
 const VISION_MODEL = 'llama-3.2-11b-vision-preview';
 const ALLOWED_MODELS = new Set([
   'llama-3.3-70b-versatile',
-  'mixtral-8x7b-32768',
-  'gemma2-9b-it',
+  'qwen/qwen3-32b',
+  'openai/gpt-oss-20b',
   'llama-3.1-8b-instant'
 ]);
 
@@ -336,10 +363,19 @@ exports.sendMessage = async (req, res) => {
     // Fetch all messages after saving the current user message.
     // The latest 10 are sent verbatim; anything older is summarized.
     const allMessages = await Message.find({ chatId }).sort({ timestamp: 1 });
-    const contextMessages = applyCurrentImagesToContext(
+    let contextMessages = applyCurrentImagesToContext(
       await buildContextMessages(groq, allMessages),
       imageParts
     );
+    
+    const isWebSearch = req.body.webSearch === 'true' || req.body.webSearch === true;
+    if (isWebSearch && content) {
+      const searchResult = await performTavilySearch(content);
+      contextMessages.push({
+        role: 'system',
+        content: `Live Web Search Results for "${content}":\n\n${searchResult}\n\nUse the search results above to answer the user's query accurately. Cite the source URLs if available.`
+      });
+    }
     
     // Send the message and get response
     const startTime = Date.now();
@@ -435,7 +471,16 @@ exports.sendAnonymousMessage = async (req, res) => {
       ...history,
       { role: 'user', content },
     ];
-    const contextMessages = await buildContextMessages(groq, allMessages);
+    let contextMessages = await buildContextMessages(groq, allMessages);
+    
+    const isWebSearch = req.body.webSearch === 'true' || req.body.webSearch === true;
+    if (isWebSearch && content) {
+      const searchResult = await performTavilySearch(content);
+      contextMessages.push({
+        role: 'system',
+        content: `Live Web Search Results for "${content}":\n\n${searchResult}\n\nUse the search results above to answer the user's query accurately. Cite the source URLs if available.`
+      });
+    }
     
     // Send the message and get response
     const startTime = Date.now();
@@ -469,6 +514,7 @@ exports.sendAnonymousMessage = async (req, res) => {
       content: responseText,
       hasCode: assistantSnippets.length > 0,
       codeSnippets: assistantSnippets,
+      timestamp: new Date(),
       metadata: {
         model: selectedTextModel,
         processingTime,
@@ -478,6 +524,7 @@ exports.sendAnonymousMessage = async (req, res) => {
     const userMessage = {
       role: 'user',
       content,
+      timestamp: new Date(),
       hasCode: extractCodeSnippets(content).length > 0
     };
 

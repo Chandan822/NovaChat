@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import { ChevronDown, LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn, Moon, Sun, Paperclip, X, Image, FileText } from 'lucide-react';
+import { ChevronDown, LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn, Moon, Sun, Paperclip, X, Image, FileText, Copy, Check, Globe, Menu } from 'lucide-react';
 import api from '../api/axios';
 import '../ChatDashboard.css';
 
@@ -12,6 +12,36 @@ const MAX_TEXT_SIZE = 1 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const ALLOWED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/javascript', 'text/javascript', 'text/css', 'text/html'];
 const ALLOWED_TEXT_EXTENSIONS = ['.txt', '.md', '.csv', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html'];
+
+const CodeBlock = ({ className, children, ...props }) => {
+  const [copied, setCopied] = useState(false);
+  const match = /language-(\w+)/.exec(className || '');
+  const codeString = String(children).replace(/\n$/, '');
+  
+  const handleCopy = () => {
+    navigator.clipboard.writeText(codeString);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="code-block-container">
+      <div className="code-block-header">
+        <span className="code-block-lang">{match ? match[1] : 'code'}</span>
+        <button 
+          type="button" 
+          className="code-copy-btn" 
+          onClick={handleCopy}
+        >
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+      </div>
+      <pre className={className} {...props}>
+        <code>{children}</code>
+      </pre>
+    </div>
+  );
+};
 
 function ChatDashboard() {
   const [chats, setChats] = useState([]);
@@ -28,10 +58,20 @@ function ChatDashboard() {
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
 
+  const [copiedIndex, setCopiedIndex] = useState(null);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  const handleCopy = (content, index) => {
+    navigator.clipboard.writeText(content);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
   const modelsList = [
     { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', desc: 'Capable and deep reasoning model' },
-    { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B', desc: 'Mistral\'s high-quality MoE model' },
-    { id: 'gemma2-9b-it', name: 'Gemma 2 9B', desc: 'Google\'s fast & responsive model' },
+    { id: 'qwen/qwen3-32b', name: 'Qwen 3 32B', desc: 'Fast & capable instruction model' },
+    { id: 'openai/gpt-oss-20b', name: 'GPT OSS 20B', desc: 'Open source equivalent model' },
     { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B', desc: 'Instant-speed general answers' },
   ];
 
@@ -203,7 +243,7 @@ function ChatDashboard() {
 
     if (!isLoggedIn) {
       // ANONYMOUS MODE
-      const newMessage = { role: 'user', content: inputMessage };
+      const newMessage = { role: 'user', content: inputMessage, timestamp: new Date().toISOString() };
       setMessages((prev) => [...prev, newMessage]);
       setInputMessage('');
       setLoading(true);
@@ -212,7 +252,8 @@ function ChatDashboard() {
         const response = await api.post('/chat/anonymous', { 
           content: newMessage.content,
           history: messages,
-          model: selectedModel
+          model: selectedModel,
+          webSearch: webSearchEnabled
         });
         setMessages((prev) => [...prev, response.data.assistantMessage]);
         setCurrentChatId('anonymous');
@@ -250,6 +291,7 @@ function ChatDashboard() {
       role: 'user',
       content: inputMessage || `Uploaded ${attachments.length} file${attachments.length > 1 ? 's' : ''}.`,
       attachments,
+      timestamp: new Date().toISOString(),
     };
     const outgoingFiles = selectedFiles;
     setMessages((prev) => [...prev, newMessage]);
@@ -262,6 +304,7 @@ function ChatDashboard() {
       const formData = new FormData();
       formData.append('content', newMessage.content);
       formData.append('model', selectedModel);
+      formData.append('webSearch', webSearchEnabled);
       outgoingFiles.forEach((file) => formData.append('attachments', file));
 
       const response = await api.post(`/chat/${targetChatId}/message`, formData);
@@ -290,19 +333,30 @@ function ChatDashboard() {
   return (
     <div className="dashboard-container" data-theme={theme}>
       {/* Sidebar */}
-      <aside className="chat-sidebar">
+      <aside className={`chat-sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-header">
           <div className="brand-row">
             <h2>NovaChat</h2>
-            <button
-              type="button"
-              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-              className="theme-toggle"
-              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-            >
-              {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
-            </button>
+            <div className="sidebar-header-actions">
+              <button
+                type="button"
+                onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+                className="theme-toggle"
+                title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+                aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+              >
+                {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsSidebarCollapsed(true)}
+                className="sidebar-toggle-inner"
+                title="Collapse sidebar"
+                aria-label="Collapse sidebar"
+              >
+                <Menu size={18} />
+              </button>
+            </div>
           </div>
           <button onClick={handleNewChat} className="new-chat-btn">
             <PlusCircle size={20} />
@@ -355,43 +409,57 @@ function ChatDashboard() {
 
       {/* Main Chat Area */}
       <main className="chat-main">
-        {currentChatId ? (
-          <>
-            <div className="chat-header">
-              <div className="chat-header-info">
-                <h3>{currentChatId === 'anonymous' ? 'Anonymous Chat' : (chats.find(c => c._id === currentChatId)?.title || 'NovaChat')}</h3>
-              </div>
-              <div className="chat-header-actions">
-                <div className="custom-dropdown" ref={dropdownRef}>
-                  <button 
-                    type="button"
-                    className="dropdown-trigger" 
-                    onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-                    title="Choose AI Model"
-                  >
-                    <span>{modelsList.find(m => m.id === selectedModel)?.name || 'Select Model'}</span>
-                    <ChevronDown size={15} className={`chevron-icon ${isModelDropdownOpen ? 'open' : ''}`} />
-                  </button>
-                  {isModelDropdownOpen && (
-                    <div className="dropdown-menu">
-                      {modelsList.map((m) => (
-                        <div 
-                          key={m.id} 
-                          className={`dropdown-item ${selectedModel === m.id ? 'active' : ''}`}
-                          onClick={() => {
-                            setSelectedModel(m.id);
-                            setIsModelDropdownOpen(false);
-                          }}
-                        >
-                          <div className="model-item-title">{m.name}</div>
-                          <div className="model-item-desc">{m.desc}</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+        <div className="chat-header">
+          {isSidebarCollapsed && (
+            <button 
+              type="button" 
+              className="sidebar-toggle-btn" 
+              onClick={() => setIsSidebarCollapsed(false)}
+              title="Expand sidebar"
+              aria-label="Toggle sidebar"
+            >
+              <Menu size={18} />
+            </button>
+          )}
+          <div className="chat-header-info">
+            <h3>{currentChatId === 'anonymous' ? 'Anonymous Chat' : (currentChatId ? (chats.find(c => c._id === currentChatId)?.title || 'NovaChat') : 'NovaChat')}</h3>
+          </div>
+          {currentChatId && (
+            <div className="chat-header-actions">
+              <div className="custom-dropdown" ref={dropdownRef}>
+                <button 
+                  type="button"
+                  className="dropdown-trigger" 
+                  onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                  title="Choose AI Model"
+                >
+                  <span>{modelsList.find(m => m.id === selectedModel)?.name || 'Select Model'}</span>
+                  <ChevronDown size={15} className={`chevron-icon ${isModelDropdownOpen ? 'open' : ''}`} />
+                </button>
+                {isModelDropdownOpen && (
+                  <div className="dropdown-menu">
+                    {modelsList.map((m) => (
+                      <div 
+                        key={m.id} 
+                        className={`dropdown-item ${selectedModel === m.id ? 'active' : ''}`}
+                        onClick={() => {
+                          setSelectedModel(m.id);
+                          setIsModelDropdownOpen(false);
+                        }}
+                      >
+                        <div className="model-item-title">{m.name}</div>
+                        <div className="model-item-desc">{m.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
+          )}
+        </div>
+
+        {currentChatId ? (
+          <>
 
             <div className="messages-area">
               {messages.length === 0 ? (
@@ -404,18 +472,40 @@ function ChatDashboard() {
                 messages.map((msg, index) => (
                   <div key={index} className={`message-bubble ${msg.role}`}>
                     <div className="message-content">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <ReactMarkdown
+                        components={{
+                          code({ node, inline, className, children, ...props }) {
+                            return !inline ? (
+                              <CodeBlock className={className} {...props}>{children}</CodeBlock>
+                            ) : (
+                              <code className={className} {...props}>{children}</code>
+                            );
+                          }
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
                       {renderAttachments(msg.attachments)}
+                    </div>
+                    <div className="message-footer">
                       {msg.role === 'assistant' && msg.metadata?.model && (
                         <div className="model-badge">
                           {msg.metadata.model === 'llama-3.3-70b-versatile' ? 'Llama 3.3' :
-                           msg.metadata.model === 'mixtral-8x7b-32768' ? 'Mixtral 8x7B' :
-                           msg.metadata.model === 'gemma2-9b-it' ? 'Gemma 2' :
+                           msg.metadata.model === 'qwen/qwen3-32b' ? 'Qwen 3 32B' :
+                           msg.metadata.model === 'openai/gpt-oss-20b' ? 'GPT OSS 20B' :
                            msg.metadata.model === 'llama-3.1-8b-instant' ? 'Llama 3.1' :
                            msg.metadata.model === 'llama-3.2-11b-vision-preview' ? 'Llama 3.2 Vision' :
                            msg.metadata.model}
                         </div>
                       )}
+                      <div className="message-actions">
+                        <span className="message-timestamp">
+                          {new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                        <button type="button" className="copy-btn" onClick={() => handleCopy(msg.content, index)} title="Copy message">
+                          {copiedIndex === index ? <Check size={14} /> : <Copy size={14} />}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))
@@ -448,6 +538,15 @@ function ChatDashboard() {
               )}
               {fileError && <div className="file-error">{fileError}</div>}
               <form onSubmit={handleSendMessage} className="message-form">
+                <button
+                  type="button"
+                  className={`websearch-toggle-btn ${webSearchEnabled ? 'active' : ''}`}
+                  onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                  title="Search the web for real-time results"
+                  aria-label="Toggle web search"
+                >
+                  <Globe size={20} />
+                </button>
                 {isLoggedIn && (
                   <>
                     <input
