@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const User = require('../models/User');
+const { encrypt } = require('../utils/crypto');
 
 const ensureJwtSecret = (res) => {
   if (!process.env.JWT_SECRET) {
@@ -56,6 +57,7 @@ exports.register = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        hasGroqKey: !!user.groqApiKey,
       },
     });
   } catch (error) {
@@ -111,6 +113,7 @@ exports.login = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        hasGroqKey: !!user.groqApiKey,
       },
     });
   } catch (error) {
@@ -137,14 +140,77 @@ exports.verify = async (req, res) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('-password');
+    const user = await User.findById(decoded.userId);
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    res.json({ user });
+    res.json({
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        hasGroqKey: !!user.groqApiKey,
+      }
+    });
   } catch (error) {
     res.status(401).json({ message: 'Invalid token' });
+  }
+};
+
+// Save or update user's Groq API Key
+exports.saveGroqKey = async (req, res) => {
+  try {
+    const { apiKey } = req.body;
+    if (!apiKey) {
+      return res.status(400).json({ message: 'API key is required' });
+    }
+
+    if (!apiKey.startsWith('gsk_')) {
+      return res.status(400).json({ message: 'Invalid Groq API key format. Key should start with "gsk_".' });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const { iv, encryptedData } = encrypt(apiKey);
+    user.groqApiKey = encryptedData;
+    user.groqApiKeyIv = iv;
+
+    await user.save();
+
+    res.json({
+      message: 'Groq API key saved successfully',
+      hasGroqKey: true,
+    });
+  } catch (error) {
+    console.error('Error saving Groq key:', error);
+    res.status(500).json({ message: 'Server error saving API key' });
+  }
+};
+
+// Delete user's Groq API Key
+exports.deleteGroqKey = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.groqApiKey = null;
+    user.groqApiKeyIv = null;
+
+    await user.save();
+
+    res.json({
+      message: 'Groq API key removed successfully',
+      hasGroqKey: false,
+    });
+  } catch (error) {
+    console.error('Error deleting Groq key:', error);
+    res.status(500).json({ message: 'Server error removing API key' });
   }
 };

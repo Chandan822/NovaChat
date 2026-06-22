@@ -1,7 +1,9 @@
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
+const User = require('../models/User');
 const Groq = require('groq-sdk');
 const axios = require('axios');
+const { decrypt } = require('../utils/crypto');
 
 const performTavilySearch = async (query) => {
   const apiKey = process.env.TAVILY_API_KEY;
@@ -14,19 +16,48 @@ const performTavilySearch = async (query) => {
       query: query,
       search_depth: 'basic',
       include_answer: true,
-      max_results: 5,
+      max_results: 3,
     });
     
     const results = response.data?.results || [];
     if (results.length === 0) return 'No search results found.';
     
     return results
-      .map((r, i) => `[${i + 1}] Title: ${r.title}\nURL: ${r.url}\nContent: ${r.content}`)
+      .map((r, i) => `[${i + 1}] Title: ${r.title}\nURL: ${r.url}\nContent: ${r.content ? r.content.substring(0, 400) + '...' : 'No description'}`)
       .join('\n\n');
   } catch (error) {
     console.error('Tavily search error:', error?.response?.data || error.message);
     return `Search error: ${error.message}`;
   }
+};
+
+const generateImagePollinations = async (prompt) => {
+  const response = await axios.get(
+    `https://image.pollinations.ai/p/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`,
+    { responseType: 'arraybuffer', timeout: 15000 }
+  );
+  const base64Image = Buffer.from(response.data, 'binary').toString('base64');
+  return `data:image/jpeg;base64,${base64Image}`;
+};
+
+const generateImageHuggingFace = async (prompt) => {
+  if (!process.env.HF_API_KEY) {
+    throw new Error('Hugging Face API key not configured on server.');
+  }
+  const response = await axios.post(
+    'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
+    { inputs: prompt },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.HF_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      responseType: 'arraybuffer',
+      timeout: 25000,
+    }
+  );
+  const base64Image = Buffer.from(response.data, 'binary').toString('base64');
+  return `data:image/jpeg;base64,${base64Image}`;
 };
 
 const CONTEXT_MESSAGE_LIMIT = 10;
@@ -329,6 +360,105 @@ exports.sendMessage = async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
+    // Handle Image Generation if requested
+    const isImageGen = req.body.isImageGen === 'true' || req.body.isImageGen === true;
+    if (isImageGen) {
+      // Check daily limit (3 images per day)
+      const todayStr = new Date().toISOString().split('T')[0];
+      const user = await User.findById(req.user._id);
+
+      if (user.lastImageGenDate === todayStr) {
+        if (user.imageGenCount >= 3) {
+          return res.status(429).json({ message: 'Daily limit of 3 images reached. Try again tomorrow.' });
+        }
+      } else {
+        // Reset count for new day
+        user.lastImageGenDate = todayStr;
+        user.imageGenCount = 0;
+        await user.save();
+      }
+
+      const preferredEngine = req.body.imageEngine || 'pollinations';
+      let imageUrl = null;
+      let usedEngine = preferredEngine;
+      const errorLog = [];
+
+      // Try preferred engine first
+      try {
+        if (preferredEngine === 'huggingface') {
+          imageUrl = await generateImageHuggingFace(content);
+        } else {
+          imageUrl = await generateImagePollinations(content);
+        }
+      } catch (err) {
+        console.error(`Preferred engine (${preferredEngine}) failed:`, err.message);
+        errorLog.push(`${preferredEngine}: ${err.message}`);
+        
+        // Failover to other engine
+        const fallbackEngine = preferredEngine === 'huggingface' ? 'pollinations' : 'huggingface';
+        console.log(`Attempting fallback to ${fallbackEngine}...`);
+        try {
+          if (fallbackEngine === 'huggingface') {
+            imageUrl = await generateImageHuggingFace(content);
+          } else {
+            imageUrl = await generateImagePollinations(content);
+          }
+          usedEngine = fallbackEngine;
+        } catch (fallbackErr) {
+          console.error(`Fallback engine (${fallbackEngine}) failed:`, fallbackErr.message);
+          errorLog.push(`${fallbackEngine}: ${fallbackErr.message}`);
+        }
+      }
+
+      if (!imageUrl) {
+        return res.status(502).json({
+          message: 'Failed to generate image from all available services.',
+          details: errorLog.join(' | ')
+        });
+      }
+
+      // Save user message (prompt)
+      const userMessage = new Message({
+        chatId,
+        userId: req.user._id,
+        role: 'user',
+        content: `Generate image: "${content}"`,
+      });
+      await userMessage.save();
+
+      // Save assistant message (image markdown)
+      const responseText = `![Generated Image: ${content}](${imageUrl})`;
+      const assistantMessage = new Message({
+        chatId,
+        userId: req.user._id,
+        role: 'assistant',
+        content: responseText,
+        metadata: {
+          model: `ImageGen (${usedEngine})`,
+          processingTime: 0,
+        }
+      });
+      await assistantMessage.save();
+
+      // Update User Gen Stats
+      user.imageGenCount += 1;
+      await user.save();
+
+      // Update Chat stats
+      chat.messageCount += 2;
+      chat.updatedAt = Date.now();
+      
+      if (chat.messageCount === 2) {
+        chat.title = `Image: ${content.substring(0, 20)}`;
+      }
+      await chat.save();
+
+      return res.status(200).json({
+        userMessage,
+        assistantMessage
+      });
+    }
+
     // Extract code snippets from user content (if any)
     const userSnippets = extractCodeSnippets(messageContent);
     
@@ -351,9 +481,22 @@ exports.sendMessage = async (req, res) => {
     }
     const model = imageParts.length > 0 ? VISION_MODEL : selectedTextModel;
 
-    // Load balance Groq keys consistently by user ID
-    const availableKeys = getGroqKeys();
-    const apiKey = getApiKeyForUser(req.user?._id, availableKeys);
+    // Determine the Groq API key: use user's custom key if configured, otherwise fallback to system keys
+    let apiKey = null;
+    if (req.user?.groqApiKey && req.user?.groqApiKeyIv) {
+      try {
+        apiKey = decrypt(req.user.groqApiKey, req.user.groqApiKeyIv);
+      } catch (decryptError) {
+        console.error('Failed to decrypt user Groq API key, falling back to system keys:', decryptError);
+      }
+    }
+
+    if (!apiKey) {
+      // Load balance Groq keys consistently by user ID
+      const availableKeys = getGroqKeys();
+      apiKey = getApiKeyForUser(req.user?._id, availableKeys);
+    }
+
     if (!apiKey) {
       return res.status(500).json({ message: 'No Groq API keys configured on server.' });
     }
@@ -398,7 +541,10 @@ exports.sendMessage = async (req, res) => {
       return res.status(502).json({ message: 'Error from AI provider', details: groqError.message });
     }
     
-    const responseText = result.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+    let responseText = result.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+    // Remove <think>...</think> blocks from the model's response
+    responseText = responseText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    
     const processingTime = Date.now() - startTime;
 
     // Parse code snippets from the model's response
@@ -503,7 +649,10 @@ exports.sendAnonymousMessage = async (req, res) => {
       return res.status(502).json({ message: 'Error from AI provider', details: groqError.message });
     }
     
-    const responseText = result.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+    let responseText = result.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+    // Remove <think>...</think> blocks from the model's response
+    responseText = responseText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
     const processingTime = Date.now() - startTime;
 
     // Parse code snippets from the model's response

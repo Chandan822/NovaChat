@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import { ChevronDown, LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn, Moon, Sun, Paperclip, X, Image, FileText, Copy, Check, Globe, Menu } from 'lucide-react';
+import { ChevronDown, LogOut, Send, MessageSquare, PlusCircle, User, Loader, Trash2, LogIn, Moon, Sun, Paperclip, X, Image, FileText, Copy, Check, Globe, Menu, Key, Plus } from 'lucide-react';
 import api from '../api/axios';
 import '../ChatDashboard.css';
 
@@ -57,10 +57,23 @@ function ChatDashboard() {
   const [selectedModel, setSelectedModel] = useState('llama-3.3-70b-versatile');
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
+  const actionMenuRef = useRef(null);
 
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  const [imageGenEnabled, setImageGenEnabled] = useState(false);
+  const [selectedImageEngine, setSelectedImageEngine] = useState('pollinations');
+
+  const [hasGroqKey, setHasGroqKey] = useState(false);
+  const [showKeyPopup, setShowKeyPopup] = useState(false);
+  const [showKeySettings, setShowKeySettings] = useState(false);
+  const [inputKey, setInputKey] = useState('');
+  const [keyError, setKeyError] = useState('');
+  const [keySuccess, setKeySuccess] = useState('');
+  const [keyLoading, setKeyLoading] = useState(false);
 
   const handleCopy = (content, index) => {
     navigator.clipboard.writeText(content);
@@ -96,12 +109,42 @@ function ChatDashboard() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  // Fetch user chats on mount if logged in
+  // Fetch user chats and verify profile on mount if logged in
   useEffect(() => {
-    if (isLoggedIn) fetchChats();
+    if (isLoggedIn) {
+      fetchChats();
+      checkUserStatus();
+    }
   }, [isLoggedIn]);
 
-  // Fetch messages when current chat changes (if logged in and selecting a real chat)
+  const checkUserStatus = async () => {
+    try {
+      const response = await api.get('/auth/verify');
+      const user = response.data.user;
+      setHasGroqKey(user.hasGroqKey);
+      
+      // Show popup if they don't have a key and haven't dismissed the popup for this session
+      const dismissed = sessionStorage.getItem('dismissedGroqKeyPopup');
+      if (!user.hasGroqKey && !dismissed) {
+        setShowKeyPopup(true);
+      }
+    } catch (error) {
+      console.error('Failed to verify user status', error);
+    }
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsModelDropdownOpen(false);
+      }
+      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target)) {
+        setShowActionMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);// Fetch messages when current chat changes (if logged in and selecting a real chat)
   useEffect(() => {
     if (currentChatId && currentChatId !== 'anonymous' && isLoggedIn) {
       fetchMessages(currentChatId);
@@ -289,12 +332,15 @@ function ChatDashboard() {
     }));
     const newMessage = {
       role: 'user',
-      content: inputMessage || `Uploaded ${attachments.length} file${attachments.length > 1 ? 's' : ''}.`,
-      attachments,
+      content: imageGenEnabled ? inputMessage : (inputMessage || `Uploaded ${attachments.length} file${attachments.length > 1 ? 's' : ''}.`),
+      attachments: imageGenEnabled ? [] : attachments,
       timestamp: new Date().toISOString(),
     };
     const outgoingFiles = selectedFiles;
-    setMessages((prev) => [...prev, newMessage]);
+    setMessages((prev) => [...prev, {
+      ...newMessage,
+      content: imageGenEnabled ? `Generate image: "${inputMessage}"` : newMessage.content
+    }]);
     setInputMessage('');
     setSelectedFiles([]);
     setFileError('');
@@ -305,7 +351,11 @@ function ChatDashboard() {
       formData.append('content', newMessage.content);
       formData.append('model', selectedModel);
       formData.append('webSearch', webSearchEnabled);
-      outgoingFiles.forEach((file) => formData.append('attachments', file));
+      formData.append('isImageGen', imageGenEnabled);
+      formData.append('imageEngine', selectedImageEngine);
+      if (!imageGenEnabled) {
+        outgoingFiles.forEach((file) => formData.append('attachments', file));
+      }
 
       const response = await api.post(`/chat/${targetChatId}/message`, formData);
       setMessages((prev) => {
@@ -317,6 +367,54 @@ function ChatDashboard() {
       console.error('Failed to send message', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveKey = async (e) => {
+    e.preventDefault();
+    if (!inputKey.trim()) return;
+    
+    setKeyLoading(true);
+    setKeyError('');
+    setKeySuccess('');
+
+    try {
+      const response = await api.post('/auth/groq-key', { apiKey: inputKey.trim() });
+      setHasGroqKey(true);
+      setKeySuccess(response.data.message);
+      setInputKey('');
+      setTimeout(() => {
+        setShowKeyPopup(false);
+        setShowKeySettings(false);
+        sessionStorage.setItem('dismissedGroqKeyPopup', 'true');
+      }, 1500);
+    } catch (err) {
+      setKeyError(err.response?.data?.message || 'Failed to save API key');
+    } finally {
+      setKeyLoading(false);
+    }
+  };
+
+  const handleDeleteKey = async () => {
+    if (!window.confirm('Are you sure you want to remove your custom Groq API key?')) return;
+    
+    setKeyLoading(true);
+    setKeyError('');
+    setKeySuccess('');
+
+    try {
+      const response = await api.delete('/auth/groq-key');
+      setHasGroqKey(false);
+      setKeySuccess(response.data.message);
+      setInputKey('');
+      setTimeout(() => {
+        setShowKeyPopup(false);
+        setShowKeySettings(false);
+      }, 1500);
+    } catch (err) {
+      setKeyError(err.response?.data?.message || 'Failed to remove API key');
+    } finally {
+      setKeyLoading(false);
     }
   };
 
@@ -395,6 +493,20 @@ function ChatDashboard() {
             <User size={20} />
             <span>{isLoggedIn ? userName : 'Guest'}</span>
           </div>
+          {isLoggedIn && (
+            <button 
+              onClick={() => { 
+                setInputKey(''); 
+                setKeyError(''); 
+                setKeySuccess(''); 
+                setShowKeySettings(true); 
+              }} 
+              className="key-settings-btn" 
+              title="Manage Groq Key"
+            >
+              <Key size={18} />
+            </button>
+          )}
           {isLoggedIn ? (
             <button onClick={handleLogout} className="logout-btn" title="Logout">
               <LogOut size={20} />
@@ -473,12 +585,28 @@ function ChatDashboard() {
                   <div key={index} className={`message-bubble ${msg.role}`}>
                     <div className="message-content">
                       <ReactMarkdown
+                        urlTransform={(uri) => {
+                          if (uri.startsWith('data:') || uri.startsWith('http:') || uri.startsWith('https:')) {
+                            return uri;
+                          }
+                          return '';
+                        }}
                         components={{
                           code({ node, inline, className, children, ...props }) {
                             return !inline ? (
                               <CodeBlock className={className} {...props}>{children}</CodeBlock>
                             ) : (
                               <code className={className} {...props}>{children}</code>
+                            );
+                          },
+                          img({ node, src, alt, ...props }) {
+                            return (
+                              <img 
+                                src={src} 
+                                alt={alt} 
+                                className="chat-markdown-image" 
+                                {...props} 
+                              />
                             );
                           }
                         }}
@@ -538,15 +666,75 @@ function ChatDashboard() {
               )}
               {fileError && <div className="file-error">{fileError}</div>}
               <form onSubmit={handleSendMessage} className="message-form">
-                <button
-                  type="button"
-                  className={`websearch-toggle-btn ${webSearchEnabled ? 'active' : ''}`}
-                  onClick={() => setWebSearchEnabled(!webSearchEnabled)}
-                  title="Search the web for real-time results"
-                  aria-label="Toggle web search"
-                >
-                  <Globe size={20} />
-                </button>
+                <div className="action-menu-container" ref={actionMenuRef}>
+                  <button
+                    type="button"
+                    className={`plus-action-btn ${showActionMenu ? 'active' : ''} ${(webSearchEnabled || imageGenEnabled) ? 'has-active-features' : ''}`}
+                    onClick={() => setShowActionMenu(!showActionMenu)}
+                    title="Add features (Web Search, Image Generation)"
+                    aria-label="Add features"
+                  >
+                    <Plus size={20} />
+                  </button>
+                  
+                  {showActionMenu && (
+                    <div className="action-menu-popover">
+                      {/* Web Search Option */}
+                      <div 
+                        className={`action-menu-item ${webSearchEnabled ? 'active' : ''}`}
+                        onClick={() => {
+                          setWebSearchEnabled(!webSearchEnabled);
+                          if (!webSearchEnabled) {
+                            setImageGenEnabled(false);
+                          }
+                          setShowActionMenu(false);
+                        }}
+                      >
+                        <Globe size={16} className="item-icon" />
+                        <div className="item-details">
+                          <span className="item-title">Web Search</span>
+                          <span className="item-desc">Browse the web for real-time data</span>
+                        </div>
+                      </div>
+
+                      {/* Image Gen Option */}
+                      <div 
+                        className={`action-menu-item ${imageGenEnabled ? 'active' : ''} ${!isLoggedIn ? 'disabled' : ''}`}
+                        onClick={() => {
+                          if (!isLoggedIn) return;
+                          setImageGenEnabled(!imageGenEnabled);
+                          if (!imageGenEnabled) {
+                            setWebSearchEnabled(false);
+                          }
+                          setShowActionMenu(false);
+                        }}
+                        title={!isLoggedIn ? "Login required to generate images" : ""}
+                      >
+                        <Image size={16} className="item-icon" />
+                        <div className="item-details">
+                          <span className="item-title">Image Generation {!isLoggedIn && <small>(Login required)</small>}</span>
+                          <span className="item-desc">Create AI images from prompts (3/day)</span>
+                        </div>
+                      </div>
+
+                      {/* Engine Selection */}
+                      {isLoggedIn && imageGenEnabled && (
+                        <div className="engine-select-container" onClick={(e) => e.stopPropagation()}>
+                          <label>Engine:</label>
+                          <select 
+                            value={selectedImageEngine}
+                            onChange={(e) => setSelectedImageEngine(e.target.value)}
+                            className="engine-select-dropdown"
+                          >
+                            <option value="pollinations">Pollinations (Flux)</option>
+                            <option value="huggingface">Hugging Face (SDXL)</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 {isLoggedIn && (
                   <>
                     <input
@@ -561,8 +749,8 @@ function ChatDashboard() {
                       type="button"
                       className="attach-btn"
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={loading}
-                      title="Attach files"
+                      disabled={loading || imageGenEnabled}
+                      title={imageGenEnabled ? "Cannot attach files during image generation" : "Attach files"}
                       aria-label="Attach files"
                     >
                       <Paperclip size={20} />
@@ -573,7 +761,11 @@ function ChatDashboard() {
                   type="text"
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}
-                  placeholder="Ask NovaChat..."
+                  placeholder={
+                    imageGenEnabled 
+                      ? `Describe the image to generate (${selectedImageEngine === 'pollinations' ? 'Pollinations' : 'Hugging Face'})...` 
+                      : (webSearchEnabled ? "Search and ask NovaChat..." : "Ask NovaChat...")
+                  }
                   disabled={loading}
                   autoFocus
                 />
@@ -593,6 +785,100 @@ function ChatDashboard() {
           </div>
         )}
       </main>
+
+      {/* Groq API Key Modal */}
+      {(showKeyPopup || showKeySettings) && (
+        <div className="groq-key-modal-overlay">
+          <div className="groq-key-modal">
+            <div className="modal-header">
+              <h3>{hasGroqKey ? 'Manage Groq API Key' : 'Add Custom Groq API Key'}</h3>
+              <button 
+                type="button" 
+                onClick={() => {
+                  setShowKeyPopup(false);
+                  setShowKeySettings(false);
+                  if (showKeyPopup) {
+                    sessionStorage.setItem('dismissedGroqKeyPopup', 'true');
+                  }
+                }}
+                className="close-modal-btn"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="modal-body">
+              {!hasGroqKey ? (
+                <>
+                  <p>
+                    Provide your own **Groq API key** to bypass global usage limits and enjoy faster, unlimited responses.
+                  </p>
+                  <p className="modal-sec-text">
+                    Your key is encrypted and stored securely. It is only used for requests made by your account. If you decline, you will continue using the server's shared API keys.
+                  </p>
+                </>
+              ) : (
+                <div className="key-status-banner">
+                  <Check size={16} className="status-icon" />
+                  <span>You have set a custom Groq API key. Your requests will use your key.</span>
+                </div>
+              )}
+
+              <form onSubmit={handleSaveKey} className="key-form">
+                <div className="key-input-container">
+                  <label htmlFor="modalGroqKey">{hasGroqKey ? 'Replace API Key' : 'Enter Groq API Key'}</label>
+                  <input
+                    id="modalGroqKey"
+                    type="password"
+                    placeholder="gsk_..."
+                    value={inputKey}
+                    onChange={(e) => setInputKey(e.target.value)}
+                    disabled={keyLoading}
+                  />
+                </div>
+
+                {keyError && <div className="key-error-msg">{keyError}</div>}
+                {keySuccess && <div className="key-success-msg">{keySuccess}</div>}
+
+                <div className="modal-actions">
+                  {hasGroqKey && (
+                    <button
+                      type="button"
+                      className="remove-key-btn"
+                      onClick={handleDeleteKey}
+                      disabled={keyLoading}
+                    >
+                      Remove Key
+                    </button>
+                  )}
+                  
+                  {!hasGroqKey && showKeyPopup && (
+                    <button
+                      type="button"
+                      className="deny-key-btn"
+                      onClick={() => {
+                        setShowKeyPopup(false);
+                        sessionStorage.setItem('dismissedGroqKeyPopup', 'true');
+                      }}
+                      disabled={keyLoading}
+                    >
+                      Use Shared Key
+                    </button>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="save-key-btn"
+                    disabled={keyLoading || !inputKey.trim()}
+                  >
+                    {keyLoading ? 'Saving...' : 'Save Key'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

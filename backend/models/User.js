@@ -20,6 +20,22 @@ const userSchema = new mongoose.Schema({
     required: [true, 'Password is required'],
     minlength: [6, 'Password must be at least 6 characters'],
   },
+  groqApiKey: {
+    type: String,
+    default: null,
+  },
+  groqApiKeyIv: {
+    type: String,
+    default: null,
+  },
+  imageGenCount: {
+    type: Number,
+    default: 0,
+  },
+  lastImageGenDate: {
+    type: String,
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
